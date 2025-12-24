@@ -20,6 +20,7 @@ const taskManager = require('../services/taskManager');
 const studyPlansDb = require('../db/helpers/studyPlans');
 const agentLogs = require('../db/helpers/agentLogs');
 const { asyncHandler } = require('../middleware/errorHandler');
+const { authenticate } = require('../middleware/auth');
 const logger = require('../utils/logger');
 
 /**
@@ -52,8 +53,8 @@ const logger = require('../utils/logger');
  *   }
  * }
  */
-router.post('/generate', asyncHandler(async (req, res) => {
-    const userId = req.headers['x-user-id'];
+router.post('/generate', authenticate, asyncHandler(async (req, res) => {
+    const userId = req.userId;
     const { message, timezone } = req.body;
 
     logger.info('Study plan generation request', {
@@ -62,13 +63,12 @@ router.post('/generate', asyncHandler(async (req, res) => {
         timezone
     });
 
-    // Validation
-    if (!userId) {
-        return res.status(401).json({
+    if (!message || message.trim().length === 0) {
+        return res.status(400).json({
             success: false,
             error: {
-                code: 'UNAUTHORIZED',
-                message: 'User ID is required in X-User-Id header'
+                code: 'INVALID_INPUT',
+                message: 'Message is required'
             }
         });
     }
@@ -162,8 +162,8 @@ router.post('/generate', asyncHandler(async (req, res) => {
  *   }
  * }
  */
-router.post('/apply', asyncHandler(async (req, res) => {
-    const userId = req.headers['x-user-id'];
+router.post('/apply', authenticate, asyncHandler(async (req, res) => {
+    const userId = req.userId;
     const { plan_id, timezone, options = {} } = req.body;
 
     logger.info('Study plan application request', {
@@ -172,13 +172,12 @@ router.post('/apply', asyncHandler(async (req, res) => {
         timezone
     });
 
-    // Validation
-    if (!userId) {
-        return res.status(401).json({
+    if (!plan_id) {
+        return res.status(400).json({
             success: false,
             error: {
-                code: 'UNAUTHORIZED',
-                message: 'User ID is required in X-User-Id header'
+                code: 'INVALID_INPUT',
+                message: 'Plan ID is required'
             }
         });
     }
@@ -265,24 +264,14 @@ router.post('/apply', asyncHandler(async (req, res) => {
  *   }
  * }
  */
-router.get('/:id', asyncHandler(async (req, res) => {
-    const userId = req.headers['x-user-id'];
+router.get('/:id', authenticate, asyncHandler(async (req, res) => {
+    const userId = req.userId;
     const { id } = req.params;
 
     logger.debug('Study plan fetch request', {
         userId,
         planId: id
     });
-
-    if (!userId) {
-        return res.status(401).json({
-            success: false,
-            error: {
-                code: 'UNAUTHORIZED',
-                message: 'User ID is required in X-User-Id header'
-            }
-        });
-    }
 
     const plan = await studyPlansDb.getStudyPlan(id);
 
@@ -337,8 +326,8 @@ router.get('/:id', asyncHandler(async (req, res) => {
  *   }
  * }
  */
-router.get('/user/plans', asyncHandler(async (req, res) => {
-    const userId = req.headers['x-user-id'];
+router.get('/user/plans', authenticate, asyncHandler(async (req, res) => {
+    const userId = req.userId;
     const { status, limit } = req.query;
 
     logger.debug('User plans fetch request', {
@@ -346,16 +335,6 @@ router.get('/user/plans', asyncHandler(async (req, res) => {
         status,
         limit
     });
-
-    if (!userId) {
-        return res.status(401).json({
-            success: false,
-            error: {
-                code: 'UNAUTHORIZED',
-                message: 'User ID is required in X-User-Id header'
-            }
-        });
-    }
 
     const plans = await studyPlansDb.getUserPlans(userId, {
         status,

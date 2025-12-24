@@ -33,21 +33,35 @@ async function authenticate(req, res, next) {
         const authHeader = req.headers['authorization'];
         const legacyUserId = req.headers['x-user-id'];
 
+        // Debug logging
+        logger.info('Auth middleware called', {
+            hasAuthHeader: !!authHeader,
+            authHeaderPrefix: authHeader ? authHeader.substring(0, 15) : 'none',
+            hasLegacyUserId: !!legacyUserId,
+            nodeEnv: process.env.NODE_ENV,
+            supabaseConfigured: !!(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY)
+        });
+
         // Primary: JWT Authentication via Bearer token
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.substring(7);
+            logger.debug('Attempting JWT verification', { tokenLength: token.length });
 
             // Verify token with Supabase
             const { data: { user }, error } = await supabase.auth.getUser(token);
 
             if (error || !user) {
-                logger.warn('Invalid or expired JWT token', { error: error?.message });
+                logger.warn('Invalid or expired JWT token', {
+                    error: error?.message,
+                    errorCode: error?.code,
+                    hasUser: !!user
+                });
                 throw new AppError('Invalid or expired authentication token', 401);
             }
 
             req.userId = user.id;
-            req.user = user; // Include full user object for additional context
-            logger.debug('User authenticated via JWT', { userId: user.id, email: user.email });
+            req.user = user;
+            logger.info('User authenticated via JWT', { userId: user.id, email: user.email });
             return next();
         }
 
@@ -64,13 +78,18 @@ async function authenticate(req, res, next) {
         }
 
         // No valid authentication found
+        logger.warn('No valid authentication found', {
+            hasAuthHeader: !!authHeader,
+            hasLegacyUserId: !!legacyUserId,
+            nodeEnv: process.env.NODE_ENV
+        });
         throw new AppError('Authentication required. Please sign in.', 401);
 
     } catch (error) {
         if (error instanceof AppError) {
             throw error;
         }
-        logger.error('Authentication error', { error: error.message });
+        logger.error('Authentication error', { error: error.message, stack: error.stack });
         throw new AppError('Authentication failed', 401);
     }
 }
