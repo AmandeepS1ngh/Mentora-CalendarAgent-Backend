@@ -1,78 +1,113 @@
 /**
  * Authentication Middleware
- * Validates user identity for protected routes.
+ * Validates user identity for protected routes using Supabase Auth.
  * 
- * IMPORTANT: This is a simplified implementation.
- * In production, integrate with your auth provider (Supabase Auth, etc.)
- * 
- * TODO: Integrate with Supabase Auth for JWT validation
- * TODO: Add role-based access control (RBAC)
- * TODO: Add API key authentication for service-to-service calls
- * TODO: Add rate limiting per user
+ * Supports:
+ * - Bearer token authentication (production) via Supabase Auth
+ * - X-User-Id header (development fallback only)
  */
 
+const { createClient } = require('@supabase/supabase-js');
 const { AppError } = require('./errorHandler');
 const logger = require('../utils/logger');
 
+// Initialize Supabase client for auth verification
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY
+);
+
 /**
- * Middleware to extract and validate user identity
+ * Middleware to extract and validate user identity via JWT
  * 
  * Expected header format:
- * Authorization: Bearer <token> - for JWT auth (production)
- * X-User-Id: <user_id> - for development/simplified auth
+ * Authorization: Bearer <token> - Supabase JWT (primary)
+ * X-User-Id: <user_id> - Development fallback only
  * 
  * @param {Object} req - Express request
  * @param {Object} res - Express response
  * @param {Function} next - Express next function
  */
-function authenticate(req, res, next) {
-    // Check for user ID in header (simplified auth for development)
-    // TODO: Replace with proper JWT validation in production
-    const userId = req.headers['x-user-id'];
-    const authHeader = req.headers['authorization'];
+async function authenticate(req, res, next) {
+    try {
+        const authHeader = req.headers['authorization'];
+        const legacyUserId = req.headers['x-user-id'];
 
-    // Development mode: accept X-User-Id header
-    if (userId) {
-        // Basic UUID validation
-        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        if (!uuidRegex.test(userId)) {
-            throw new AppError('Invalid user ID format', 400);
+        // Primary: JWT Authentication via Bearer token
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const token = authHeader.substring(7);
+
+            // Verify token with Supabase
+            const { data: { user }, error } = await supabase.auth.getUser(token);
+
+            if (error || !user) {
+                logger.warn('Invalid or expired JWT token', { error: error?.message });
+                throw new AppError('Invalid or expired authentication token', 401);
+            }
+
+            req.userId = user.id;
+            req.user = user; // Include full user object for additional context
+            logger.debug('User authenticated via JWT', { userId: user.id, email: user.email });
+            return next();
         }
 
-        req.userId = userId;
-        logger.debug('User authenticated via X-User-Id header', { userId });
-        return next();
+        // Fallback: X-User-Id header (development mode only)
+        if (process.env.NODE_ENV !== 'production' && legacyUserId) {
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(legacyUserId)) {
+                throw new AppError('Invalid user ID format', 400);
+            }
+
+            req.userId = legacyUserId;
+            logger.debug('User authenticated via X-User-Id header (dev mode)', { userId: legacyUserId });
+            return next();
+        }
+
+        // No valid authentication found
+        throw new AppError('Authentication required. Please sign in.', 401);
+
+    } catch (error) {
+        if (error instanceof AppError) {
+            throw error;
+        }
+        logger.error('Authentication error', { error: error.message });
+        throw new AppError('Authentication failed', 401);
     }
-
-    // JWT authentication (production)
-    // TODO: Implement proper JWT validation with Supabase Auth
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-        const token = authHeader.substring(7);
-
-        // TODO: Validate JWT token
-        // For now, reject if X-User-Id is not provided
-        logger.warn('JWT authentication not yet implemented');
-    }
-
-    // No valid authentication found
-    throw new AppError('Authentication required. Provide X-User-Id header.', 401);
 }
 
 /**
  * Optional authentication - sets userId if provided but doesn't require it
  * Useful for endpoints that work for both authenticated and anonymous users
  */
-function optionalAuth(req, res, next) {
-    const userId = req.headers['x-user-id'];
+async function optionalAuth(req, res, next) {
+    try {
+        const authHeader = req.headers['authorization'];
+        const legacyUserId = req.headers['x-user-id'];
 
-    if (userId) {
-        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        if (uuidRegex.test(userId)) {
-            req.userId = userId;
+        // Try JWT first
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const token = authHeader.substring(7);
+            const { data: { user } } = await supabase.auth.getUser(token);
+
+            if (user) {
+                req.userId = user.id;
+                req.user = user;
+            }
         }
-    }
+        // Development fallback
+        else if (process.env.NODE_ENV !== 'production' && legacyUserId) {
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (uuidRegex.test(legacyUserId)) {
+                req.userId = legacyUserId;
+            }
+        }
 
-    next();
+        next();
+    } catch (error) {
+        // Don't throw for optional auth, just continue without user
+        logger.debug('Optional auth failed, continuing as anonymous', { error: error.message });
+        next();
+    }
 }
 
 /**
