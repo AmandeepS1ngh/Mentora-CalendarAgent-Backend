@@ -42,51 +42,92 @@ const app = express();
 // Middleware Stack
 // =============================================================================
 
-// Enable CORS - configurable for production
+// Enable CORS - More flexible configuration
 const allowedOrigins = process.env.CORS_ORIGINS
     ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
     : [
         'https://mentora-agentic-ai-frontend.vercel.app',
-        'https://mentora-agentic-ai-frontend-7imf62s7u.vercel.app',
         'http://localhost:3000',
         'http://localhost:3001'
     ];
 
-// CORS configuration with proper origin handling
-const corsOptions = {
-    origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps, curl, Postman)
-        if (!origin) {
-            return callback(null, true);
-        }
+/**
+ * Check if an origin is allowed for CORS
+ * @param {string} origin - The origin to check
+ * @returns {boolean} - Whether the origin is allowed
+ */
+const isOriginAllowed = (origin) => {
+    // No origin means same-origin or non-browser request
+    if (!origin) return true;
 
-        // In development, allow all origins
-        if (config.nodeEnv !== 'production') {
-            return callback(null, true);
-        }
+    // Check explicit allowed origins
+    if (allowedOrigins.includes(origin)) return true;
+    if (allowedOrigins.includes('*')) return true;
 
-        // In production, check against allowed origins
-        const isAllowed = allowedOrigins.some(allowed => {
-            if (allowed === '*') return true;
-            if (origin === allowed) return true;
-            // Allow any Vercel preview URLs for this project
-            if (origin.includes('mentora-agentic-ai-frontend') && origin.includes('vercel.app')) {
+    // Allow ALL Vercel deployments (production, preview, and branch deploys)
+    // This covers patterns like:
+    // - mentora-agentic-ai-frontend.vercel.app (production)
+    // - mentora-agentic-ai-frontend-*.vercel.app (preview)
+    // - mentora-agentic-ai-frontend-git-*.vercel.app (branch)
+    if (origin.endsWith('.vercel.app')) {
+        // Extract subdomain and check if it starts with our project name
+        try {
+            const url = new URL(origin);
+            const subdomain = url.hostname.replace('.vercel.app', '');
+            if (subdomain.startsWith('mentora-agentic-ai-frontend') ||
+                subdomain.includes('mentora')) {
+                logger.info(`CORS: Allowed Vercel deployment origin: ${origin}`);
                 return true;
             }
-            return false;
-        });
+        } catch (e) {
+            // Invalid URL, continue to check other patterns
+        }
+    }
 
-        if (isAllowed) {
-            callback(null, true);
-        } else {
-            logger.warn(`CORS: Blocked origin ${origin}`);
-            callback(new Error('Not allowed by CORS'));
+    // Allow localhost with any port for development
+    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+        return true;
+    }
+
+    return false;
+};
+
+// CORS configuration with robust origin handling
+const corsOptions = {
+    origin: function (origin, callback) {
+        try {
+            if (isOriginAllowed(origin)) {
+                callback(null, true);
+            } else {
+                logger.warn(`CORS: Blocked origin`, {
+                    origin,
+                    allowedOrigins,
+                    nodeEnv: config.nodeEnv
+                });
+                // Return false instead of an error to avoid crashing preflight requests
+                // This allows the browser to receive proper CORS headers but denies access
+                callback(null, false);
+            }
+        } catch (error) {
+            logger.error(`CORS: Error checking origin`, { origin, error: error.message });
+            // On error, deny access but don't crash
+            callback(null, false);
         }
     },
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id', 'X-Requested-With', 'Accept'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'X-Requested-With',
+        'Accept',
+        'X-User-Id',
+        'Origin',
+        'Cache-Control'
+    ],
+    exposedHeaders: ['Content-Range', 'X-Content-Range'],
     credentials: true,
-    optionsSuccessStatus: 200
+    maxAge: 86400, // Cache preflight response for 24 hours
+    optionsSuccessStatus: 200 // Some legacy browsers choke on 204
 };
 
 // Apply CORS middleware
